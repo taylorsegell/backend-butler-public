@@ -27,17 +27,18 @@ The worker pins the API, SDK, and OTLP exporter family to patched OpenTelemetry 
 
 Before publishing a beta:
 
-- [ ] Review and merge the candidate PR; require the passing `CI required` check (card, Python, app, audits, image builds, Compose, hygiene, and HACS when public).
+- [x] The candidate passes `CI required`: card, Python, app, audits, image builds, Compose, hygiene, and public HACS validation.
 - [x] Resolve dependency audit findings and scan the release tree. The OpenTelemetry override audits clean.
 - [x] Review development history and curate a fresh public snapshot. Do not copy private history, discussions, task archives or captures.
-- [ ] Enable private vulnerability reporting and configure branch protection/required checks in GitHub.
+- [x] Enable private vulnerability reporting, secret scanning/push protection, and protected-main PRs with required GitHub Actions `CI required`; disallow force pushes/deletion.
 - [x] Prepare integration/card version `1.1.0-beta.1` together and verify a fresh card build. The separate HA app version remains independent.
-- [ ] Publish the curated snapshot in the new public repository and run HACS validation there. Keep the development repository private.
+- [x] Publish the curated snapshot with fresh history and pass HACS validation in the new public repository; retain the development repository privately.
 - [x] Complete automated real-HA and isolated real-LiveKit checks, including worker restart, permission denial, scheduler outage, speech input/output, and conversation recovery. See [smoke evidence](smoke-tests.md).
-- [ ] Install this exact candidate card/integration and repeat the physical mobile check; the existing-deployment phone check passed, but its bundle differs.
+- [x] Install and verify the exact candidate bundle, restart HA successfully, and receive maintainer confirmation of the physical mobile check.
 - [x] Verify closed-state backup/restoration on disposable conversation and scheduler data, including restart and ownership checks.
-- [ ] Before deployment, capture the actual deployment backup and previous image/commit; never use a synthetic recovery test as a substitute for that backup.
-- [ ] Create a reviewed `v…-beta.…` tag at the tested commit. The release workflow creates a draft and marks tags containing a hyphen as prereleases. Review release notes and publish manually only after all gates pass.
+- [x] Before the candidate integration install, capture a local HA configuration backup and component rollback copy; keep household worker/scheduler images unchanged.
+- [x] Tag the tested candidate as `v1.1.0-beta.1` and pass the full tag pipeline, which creates a draft prerelease.
+- [ ] Review and publish the prepared draft prerelease.
 
 ## Monitor and roll back
 

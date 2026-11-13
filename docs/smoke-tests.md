@@ -35,6 +35,7 @@ The isolated candidate stack used synthetic users/state, its own worker dispatch
 - A full candidate-worker restart preserved history and ownership; a new RTC/model session resumed it successfully.
 - With the isolated scheduler stopped, stored history and core RTC/model conversations remained available. The scheduler was then restarted.
 - Temporary containers, network, synthetic state and credential copies were removed. Household worker/scheduler services stayed on their original images.
-- The maintainer confirmed mobile microphone, captions, spoken reply, mute/stop and reconnect behavior on the existing HA deployment. Its served card bundle differs from this candidate; an exact-candidate installation/phone check remains the final device gate.
+- After a local HA configuration backup and component rollback copy, the tested integration was installed and HA restarted successfully. The served card bundle was verified byte-for-byte against this candidate, the integration settings endpoint was healthy, and invalid conversation IDs were rejected.
+- The maintainer then confirmed voice input, captions/spoken replies, mute/stop and saved-conversation reconnect on the exact installed beta candidate.
 
-Physical phone permissions and acoustic behavior cannot be certified by synthetic audio or browser fixtures. Before publishing the beta release, repeat the mobile check against the installed candidate bundle.
+Physical phone permissions and acoustic behavior cannot be certified by synthetic audio or browser fixtures. The exact installed candidate completed the mobile check; repeat it after future card, SDK or permission changes.

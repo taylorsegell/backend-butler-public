@@ -10,6 +10,6 @@ Use the [public beta guide](public-beta.md) and [Home Assistant integration guid
 
 ## Before publication
 
-Select the beta version and tested commit, complete the [release gates](public-beta.md), and verify the patched OpenTelemetry audit remains clean. The public repository uses a curated source snapshot and fresh history; the development repository stays private. HACS must pass on the public repository. Automated real-HA, real-LiveKit speech/reconnect, owner isolation and disposable-state recovery tests pass. Repeat the physical mobile check after installing this exact candidate bundle before inviting testers.
+The candidate is tagged and passes the full CI/release pipeline, including HACS and clean dependency/secret audits. Real HA, LiveKit speech/reconnect/restart, owner isolation and disposable-state recovery checks pass. The installed card was verified against the candidate bundle, and the maintainer confirmed the exact-candidate mobile check. The public repository has fresh history and enforced CI/PR protections; the development repository remains private. Review and publish the prepared draft after the [release checklist](public-beta.md).
 
 Beta storage/API compatibility can change. Back up conversation state and scheduler data before upgrading. Report redacted issues through GitHub; report vulnerabilities privately following [SECURITY.md](../SECURITY.md).

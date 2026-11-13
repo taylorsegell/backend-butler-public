@@ -1,0 +1,153 @@
+"""FastAPI surface for the scheduler service.
+
+The worker calls the ``/tasks`` CRUD, ``/notify``, ``/progress`` and ``/users`` endpoints over
+the compose network, and the Home Assistant integration reads tasks and settings through the
+published port.
+"""
+
+from __future__ import annotations
+
+import hmac
+import logging
+from contextlib import asynccontextmanager
+from typing import Annotated
+
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Header, HTTPException
+
+from config import load_config
+from db import make_engine, make_session_factory
+from schemas import (
+    NotifyRequest,
+    ProgressEvent,
+    SettingsOut,
+    SettingsUpdate,
+    TaskCreate,
+    TaskOut,
+    TaskUpdate,
+    UserSettings,
+)
+from service import SchedulerService
+
+logging.basicConfig(level=logging.INFO)
+
+load_dotenv()
+
+cfg = load_config()
+engine = make_engine(cfg.db_path)
+Session = make_session_factory(engine)
+service = SchedulerService(cfg, Session)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if not cfg.auth_token:
+        logging.error("SCHEDULER_TOKEN is not set, so every endpoint but /healthz refuses requests")
+    service.start()
+    yield
+    await service.stop()
+
+
+def require_token(authorization: str | None = Header(default=None)) -> None:
+    """Guard every route but /healthz with SCHEDULER_TOKEN.
+
+    The port is published, and a task's instruction runs as the person it names, so the
+    service refuses everything while the token is unset rather than running open.
+    """
+    if not cfg.auth_token:
+        raise HTTPException(status_code=503, detail="SCHEDULER_TOKEN is not set")
+    expected = f"Bearer {cfg.auth_token}".encode()
+    if not hmac.compare_digest((authorization or "").encode(), expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+app = FastAPI(title="HA Agent Scheduler", lifespan=lifespan)
+guard = [Depends(require_token)]
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    return {"ok": True}
+
+
+def owner(user: str | None = None, ha_user_id: str | None = None) -> str | None:
+    """The person a task request acts for; other people's tasks are not found."""
+    return service.owner(user, ha_user_id)
+
+
+Owner = Annotated[str | None, Depends(owner)]
+
+
+@app.post("/tasks", response_model=TaskOut, status_code=201, dependencies=guard)
+def create_task(req: TaskCreate, who: Owner) -> TaskOut:
+    try:
+        return service.create_task(req, owner=who)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/tasks", response_model=list[TaskOut], dependencies=guard)
+def list_tasks(who: Owner, active_only: bool = True) -> list[TaskOut]:
+    return service.list_tasks(active_only=active_only, owner=who)
+
+
+@app.get("/tasks/{task_id}", response_model=TaskOut, dependencies=guard)
+def get_task(task_id: str, who: Owner) -> TaskOut:
+    out = service.get_task(task_id, owner=who)
+    if out is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return out
+
+
+@app.patch("/tasks/{task_id}", response_model=TaskOut, dependencies=guard)
+def update_task(task_id: str, req: TaskUpdate, who: Owner) -> TaskOut:
+    try:
+        out = service.update_task(task_id, req, owner=who)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if out is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return out
+
+
+@app.delete("/tasks/{task_id}", response_model=TaskOut, dependencies=guard)
+def delete_task(task_id: str, who: Owner) -> TaskOut:
+    out = service.delete_task(task_id, owner=who)
+    if out is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return out
+
+
+@app.post("/notify", dependencies=guard)
+async def notify(req: NotifyRequest) -> dict:
+    """Send a notification to a person's channels."""
+    return {"sent": await service.notify(req)}
+
+
+@app.post("/progress", dependencies=guard)
+async def progress(event: ProgressEvent) -> dict:
+    """Show one phase of a person's text turn on their phone."""
+    return {"shown": await service.progress.update(event)}
+
+
+@app.get("/users/resolve", dependencies=guard)
+def resolve_user(ha_user_id: str) -> dict:
+    """The id of the person linked to an HA login; null for none."""
+    return {"id": service.owner(None, ha_user_id)}
+
+
+@app.get("/users/{user_id}", response_model=UserSettings, dependencies=guard)
+def get_user(user_id: str) -> UserSettings:
+    if (person := service.user(user_id)) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return person
+
+
+@app.get("/settings", response_model=SettingsOut, dependencies=guard)
+def get_settings() -> SettingsOut:
+    return service.get_settings()
+
+
+@app.put("/settings", response_model=SettingsOut, dependencies=guard)
+def update_settings(req: SettingsUpdate) -> SettingsOut:
+    return service.update_settings(req)

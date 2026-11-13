@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+.env
+.env.*
+.ruff_cache
+# per-deployment overrides are mounted at run time, never built in
+*.local.yaml
+tests/

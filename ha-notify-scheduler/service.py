@@ -1,0 +1,436 @@
+"""Scheduling engine: owns the APScheduler instance and the task/run persistence.
+
+Design: the ``tasks`` table is the single source of truth. APScheduler runs purely in memory
+and is rehydrated from the table on boot, so there is only one durable store to reason about
+(no risk of the job store and the task table drifting apart). One-shot tasks use a
+``DateTrigger``; recurring tasks a cron ``CronTrigger``. When a trigger fires we record a
+``Run``, carry the task out (runner.py), and store its outcome on the run.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+import httpx
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+import ha
+import runner
+from config import Config
+from progress import PhoneProgress
+from models import Run, Settings, Task
+from schemas import (
+    NotifyRequest,
+    RunOut,
+    SettingsOut,
+    SettingsUpdate,
+    TaskCreate,
+    TaskOut,
+    TaskUpdate,
+    UserSettings,
+)
+
+logger = logging.getLogger("scheduler.service")
+
+ACTIVE = "scheduled"
+# a run's stored result is clipped so the task list stays within the agent's tool output
+MAX_RESULT_CHARS = 12000
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utcnow_iso() -> str:
+    return _utcnow().isoformat()
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex
+
+
+class SchedulerService:
+    def __init__(self, cfg: Config, session_factory: sessionmaker) -> None:
+        self.cfg = cfg
+        self._Session = session_factory
+        default_tz = ZoneInfo(cfg.default_tz) if cfg.default_tz else timezone.utc
+        self.scheduler = AsyncIOScheduler(timezone=default_tz)
+        self.progress = PhoneProgress(cfg, self.phone)
+        self._listeners: list[asyncio.Task[None]] = []
+
+    # --- lifecycle -----------------------------------------------------------------
+
+    def start(self) -> None:
+        self.scheduler.start()
+        self._rehydrate()
+        if self.cfg.ha_url and self.cfg.chat_token:
+            self._listeners = [
+                asyncio.create_task(self.progress.listen()),
+                asyncio.create_task(self._forward_updates()),
+            ]
+
+    async def stop(self) -> None:
+        self.scheduler.shutdown(wait=False)
+        for listener in self._listeners:
+            listener.cancel()
+
+    async def _forward_updates(self) -> None:
+        """Send HA's `agent_update` events, `{user, source, text}`, into the person's
+        conversation as an update the agent relays, e.g. a script reporting back later."""
+        async for event in ha.subscribe(self.cfg, "agent_update"):
+            user, text = event.get("user"), str(event.get("text") or "").strip()
+            if not user or not text:
+                continue
+            logger.info("update for %s from HA: %s", user, text[:120])
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.post(
+                        f"{self.cfg.chat_url}/events",
+                        params={"user": user},
+                        headers={"Authorization": f"Bearer {self.cfg.chat_token}"},
+                        json={"source": event.get("source") or "Home Assistant", "text": text},
+                    )
+                    resp.raise_for_status()
+            except Exception:  # noqa: BLE001 - one lost update leaves the listener running
+                logger.exception("failed to forward an update from HA")
+
+    # --- public CRUD ---------------------------------------------------------------
+
+    def owner(self, user: str | None, ha_user_id: str | None) -> str | None:
+        """The id of the person a request acts for; None for no one.
+
+        A given id is taken as is, even one the settings do not list; an HA login counts
+        only when a person in the settings is linked to it.
+        """
+        if user and user.strip():
+            return user.strip().casefold()
+        if ha_user_id:
+            for person in self.get_settings().users:
+                if person.ha_user_id == ha_user_id:
+                    return person.id
+        return None
+
+    def user(self, user_id: str | None) -> UserSettings | None:
+        """The settings of the person with this id; None for no one or someone unlisted."""
+        return next((p for p in self.get_settings().users if p.id == user_id), None)
+
+    def notify_targets(self, user_id: str | None) -> list[str]:
+        """A person's notification channels; HA's own for anyone else, or anyone with none."""
+        person = self.user(user_id)
+        return (person and person.notify_targets) or ["persistent_notification"]
+
+    def phone(self, user_id: str | None) -> str:
+        """The notify service showing a person's text-turn progress; "" for none.
+
+        No one in particular gets TEXT_LIVE_ACTIVITY; a person gets the first phone in their
+        devices, so one person's chat never shows on another's phone.
+        """
+        if user_id is None:
+            return self.cfg.default_phone
+        person = self.user(user_id)
+        targets = person.notify_targets if person else []
+        return next((t for t in targets if t.startswith("mobile_app_")), "")
+
+    async def notify(self, req: NotifyRequest) -> bool:
+        targets = self.notify_targets(req.user)
+        return await ha.notify(self.cfg, req.message, req.title or "", targets)
+
+    def create_task(self, req: TaskCreate, owner: str | None = None) -> TaskOut:
+        run_at_iso, cron = self._validate_schedule(req.schedule)
+        with self._Session() as s:
+            task = Task(
+                id=_new_id(),
+                description=req.description,
+                schedule_type=req.schedule.type,
+                run_at=run_at_iso,
+                cron=cron,
+                timezone=req.schedule.timezone,
+                execution=req.execution.model_dump(exclude_none=True),
+                status=ACTIVE,
+                enabled=True,
+                created_at=_utcnow_iso(),
+                user=owner or (req.user.strip().casefold() if req.user else None),
+            )
+            s.add(task)
+            s.commit()
+            s.refresh(task)
+            self._add_job(task)
+            return self._to_out(task)
+
+    def list_tasks(
+        self, active_only: bool = True, owner: str | None = None
+    ) -> list[TaskOut]:
+        """One person's tasks; no one in particular sees the tasks no one owns."""
+        with self._Session() as s:
+            stmt = select(Task).where(
+                Task.user == owner if owner else Task.user.is_(None)
+            )
+            if active_only:
+                stmt = stmt.where(Task.status == ACTIVE)
+            tasks = list(s.scalars(stmt))
+            out = [self._to_out(t) for t in tasks]
+        # Soonest fire first; tasks with no upcoming run sort last.
+        out.sort(key=lambda t: (t.next_run_at is None, t.next_run_at or ""))
+        return out
+
+    def get_task(self, task_id: str, owner: str | None = None) -> TaskOut | None:
+        with self._Session() as s:
+            task = s.get(Task, task_id)
+            return self._to_out(task) if task and task.user == owner else None
+
+    def update_task(
+        self, task_id: str, req: TaskUpdate, owner: str | None = None
+    ) -> TaskOut | None:
+        with self._Session() as s:
+            task = s.get(Task, task_id)
+            if task is None or task.user != owner:
+                return None
+            if req.description is not None:
+                task.description = req.description
+            if req.execution is not None:
+                task.execution = req.execution.model_dump(exclude_none=True)
+            if req.schedule is not None:
+                run_at_iso, cron = self._validate_schedule(req.schedule)
+                task.schedule_type = req.schedule.type
+                task.run_at = run_at_iso
+                task.cron = cron
+                task.timezone = req.schedule.timezone
+                # Re-scheduling revives a task that already fired / was cancelled.
+                if task.status != ACTIVE:
+                    task.status = ACTIVE
+            if req.enabled is not None:
+                task.enabled = req.enabled
+            s.commit()
+            s.refresh(task)
+            self._remove_job(task.id)
+            if task.enabled and task.status == ACTIVE:
+                self._add_job(task)
+            return self._to_out(task)
+
+    def delete_task(self, task_id: str, owner: str | None = None) -> TaskOut | None:
+        """Hard-delete a task and its run history, and unschedule it."""
+        with self._Session() as s:
+            task = s.get(Task, task_id)
+            if task is None or task.user != owner:
+                return None
+            out = self._to_out(task)  # snapshot before removal
+            s.delete(task)  # runs cascade via the relationship
+            s.commit()
+        self._remove_job(task_id)
+        return out
+
+    # --- settings ------------------------------------------------------------------
+
+    def get_settings(self) -> SettingsOut:
+        with self._Session() as s:
+            row = s.get(Settings, 1)
+            # No row yet → default to the in-HA persistent notification being enabled.
+            targets = list(row.notify_targets) if row else ["persistent_notification"]
+            users = list(row.users or []) if row else []
+        return SettingsOut(notify_targets=targets, users=users)
+
+    def update_settings(self, req: SettingsUpdate) -> SettingsOut:
+        with self._Session() as s:
+            row = s.get(Settings, 1)
+            if row is None:
+                row = Settings(id=1, notify_targets=[], users=[])
+                s.add(row)
+            if req.notify_targets is not None:
+                row.notify_targets = req.notify_targets
+            if req.users is not None:
+                row.users = [u.model_dump() for u in req.users]
+            s.commit()
+            s.refresh(row)
+            return SettingsOut(
+                notify_targets=list(row.notify_targets), users=list(row.users or [])
+            )
+
+    # --- firing --------------------------------------------------------------------
+
+    async def _fire(self, task_id: str) -> None:
+        """APScheduler callback. Records a pending run, carries the task out, and stores
+        its outcome on the run."""
+        with self._Session() as s:
+            task = s.get(Task, task_id)
+            if task is None or not task.enabled or task.status == "cancelled":
+                logger.info("skip firing task %s (missing/disabled/cancelled)", task_id)
+                return
+            run_id = _new_id()
+            s.add(Run(id=run_id, task_id=task_id, fired_at=_utcnow_iso(), status="pending"))
+            # A one-shot won't fire again, so it's done as far as scheduling goes; the run row
+            # tracks its actual outcome.
+            if task.schedule_type == "once":
+                task.status = "completed"
+            description = task.description
+            execution = dict(task.execution)
+            user = task.user
+            s.commit()
+
+        logger.info("running task %s (run %s): %s", task_id, run_id, description)
+        status, result = await runner.run(
+            self.cfg,
+            description,
+            execution,
+            user,
+            self.notify_targets(user),
+            # a phone that shows the person's turns already has the answer
+            shown=bool(self.phone(user)),
+        )
+        with self._Session() as s:
+            run = s.get(Run, run_id)
+            if run is not None:  # the task was deleted while it ran
+                run.status = status
+                run.result = result[:MAX_RESULT_CHARS]
+                s.commit()
+
+    # --- helpers -------------------------------------------------------------------
+
+    def _validate_schedule(self, schedule) -> tuple[str | None, str | None]:
+        """Validate a schedule and return the (run_at_iso, cron) to persist.
+
+        Raises ValueError on a bad timezone, a past one-shot time, or an invalid cron.
+        """
+        try:
+            tz = ZoneInfo(schedule.timezone)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"invalid timezone {schedule.timezone!r}: {exc}") from exc
+
+        if schedule.type == "once":
+            try:
+                dt = datetime.fromisoformat(schedule.run_at)
+            except ValueError as exc:
+                raise ValueError(f"invalid run_at {schedule.run_at!r}") from exc
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            if dt.astimezone(timezone.utc) <= _utcnow():
+                raise ValueError("run_at is in the past")
+            return dt.isoformat(), None
+
+        # recurring: validate the cron expression by building the trigger.
+        try:
+            CronTrigger.from_crontab(schedule.cron, timezone=tz)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"invalid cron {schedule.cron!r}: {exc}") from exc
+        return None, schedule.cron
+
+    def _trigger(self, task: Task):
+        tz = ZoneInfo(task.timezone)
+        if task.schedule_type == "recurring":
+            return CronTrigger.from_crontab(task.cron, timezone=tz)
+        if task.run_at is None:
+            raise ValueError(f"once task {task.id} has no run_at")
+        dt = datetime.fromisoformat(task.run_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        return DateTrigger(run_date=dt)
+
+    def _add_job(self, task: Task) -> None:
+        self.scheduler.add_job(
+            self._fire,
+            trigger=self._trigger(task),
+            args=[task.id],
+            id=task.id,
+            replace_existing=True,
+            misfire_grace_time=self.cfg.misfire_grace_seconds,
+            coalesce=True,
+        )
+
+    def _remove_job(self, task_id: str) -> None:
+        if self.scheduler.get_job(task_id) is not None:
+            self.scheduler.remove_job(task_id)
+
+    def _next_run_at(self, task: Task) -> str | None:
+        job = self.scheduler.get_job(task.id)
+        # next_run_time is a __slots__ field left unassigned until a *running* scheduler
+        # processes the job, so read it defensively (getattr, not attribute access).
+        next_run_time = getattr(job, "next_run_time", None) if job is not None else None
+        if next_run_time is not None:
+            return next_run_time.isoformat()
+        if task.schedule_type == "once" and task.status == ACTIVE:
+            return task.run_at
+        return None
+
+    def _to_out(self, task: Task) -> TaskOut:
+        return TaskOut(
+            id=task.id,
+            description=task.description,
+            schedule_type=task.schedule_type,
+            run_at=task.run_at,
+            cron=task.cron,
+            timezone=task.timezone,
+            execution=task.execution,
+            status=task.status,
+            enabled=task.enabled,
+            created_at=task.created_at,
+            user=task.user,
+            next_run_at=self._next_run_at(task),
+            # Most-recent runs only: bounds the payload so a long-lived recurring task's
+            # history can't blow past the worker's tool-feed size budget (runs are asc).
+            runs=[
+                RunOut(id=r.id, fired_at=r.fired_at, status=r.status, result=r.result)
+                for r in task.runs[-10:]
+            ],
+        )
+
+    def _rehydrate(self) -> None:
+        """Re-arm live tasks from the DB after a restart.
+
+        Recurring tasks are simply re-added. A one-shot whose time is still in the future is
+        re-armed; one whose time passed while we were down runs once now if within the misfire
+        grace window, otherwise it's marked "missed" so the user can see it didn't run.
+        """
+        now = _utcnow()
+        with self._Session() as s:
+            tasks = list(
+                s.scalars(select(Task).where(Task.status == ACTIVE, Task.enabled.is_(True)))
+            )
+            for task in tasks:
+                # one bad row (an unknown timezone, a broken cron) must not stop the rest
+                try:
+                    self._rehydrate_one(s, task, now)
+                except Exception:  # noqa: BLE001
+                    logger.exception("could not re-arm task %s; it stays as it is", task.id)
+            s.commit()
+        logger.info("rehydrated %d active task(s)", len(tasks))
+
+
+    def _rehydrate_one(self, s: Session, task: Task, now: datetime) -> None:
+        """Re-arm one task, run it now, or mark it missed (see _rehydrate)."""
+        if task.schedule_type == "recurring":
+            self._add_job(task)
+            return
+        dt = datetime.fromisoformat(task.run_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo(task.timezone))
+        dt_utc = dt.astimezone(timezone.utc)
+        if dt_utc > now:
+            self._add_job(task)
+        elif (now - dt_utc).total_seconds() <= self.cfg.misfire_grace_seconds:
+            self.scheduler.add_job(
+                self._fire,
+                trigger=DateTrigger(run_date=now),
+                # a slow start must not count the catch-up run itself as missed
+                misfire_grace_time=None,
+                args=[task.id],
+                id=task.id,
+                replace_existing=True,
+            )
+        else:
+            task.status = "missed"
+            s.add(
+                Run(
+                    id=_new_id(),
+                    task_id=task.id,
+                    fired_at=_utcnow_iso(),
+                    status="error",
+                    result="missed while the scheduler was offline",
+                )
+            )

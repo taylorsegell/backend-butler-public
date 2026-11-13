@@ -1,0 +1,21 @@
+{
+  "domain": "backend_butler",
+  "name": "Backend Butler",
+  "version": "1.1.0-beta.1",
+  "documentation": "https://github.com/taylorsegell/backend-butler-public",
+  "issue_tracker": "https://github.com/taylorsegell/backend-butler-public/issues",
+  "codeowners": [
+    "@taylorsegell"
+  ],
+  "dependencies": [
+    "http",
+    "frontend"
+  ],
+  "config_flow": true,
+  "single_config_entry": true,
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "requirements": [
+    "livekit-api>=1.0.0"
+  ]
+}

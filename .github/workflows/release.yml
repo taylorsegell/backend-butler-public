@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual runs validate the release pipeline without creating a release or tag.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Draft release
+    needs: validate
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists — skipping"
+            exit 0
+          fi
+          release_flags=()
+          case "$tag" in
+            *-*) release_flags+=(--prerelease) ;;
+          esac
+          for i in 1 2 3; do
+            if gh release create "$tag" --verify-tag --generate-notes --draft "${release_flags[@]}"; then
+              exit 0
+            fi
+            echo "::warning::release attempt $i for $tag failed; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::failed to create release $tag after 3 attempts"
+          exit 1

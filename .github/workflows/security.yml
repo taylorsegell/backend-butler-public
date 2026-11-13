@@ -1,0 +1,83 @@
+name: Security
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  javascript:
+    name: JavaScript audit (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [card, backend_butler]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        if: matrix.project == 'card'
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Audit locked card dependencies
+        if: matrix.project == 'card'
+        working-directory: card
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm audit --audit-level high
+      - name: Audit locked app dependencies
+        if: matrix.project == 'backend_butler'
+        working-directory: backend_butler
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+
+  python:
+    name: Python audit (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [agent, ha-notify-scheduler]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.13.0'
+          python-version: '3.13'
+      - run: uv sync --frozen
+      - name: Audit the installed locked environment
+        run: |
+          site_dir="$(uv run --no-sync python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+          uvx --from pip-audit==2.10.1 pip-audit --path "$site_dir" --strict
+
+  secrets:
+    name: Git history secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install checksum-verified Gitleaks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITLEAKS_VERSION: '8.30.1'
+        run: |
+          install_dir="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$install_dir"
+          gh release download "v$GITLEAKS_VERSION" --repo gitleaks/gitleaks \
+            --pattern "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            --pattern "gitleaks_${GITLEAKS_VERSION}_checksums.txt" --dir "$install_dir"
+          cd "$install_dir"
+          sha256sum --check --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar --no-same-owner -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Scan all fetched history with redacted output
+        run: gitleaks git --redact --log-opts=--all

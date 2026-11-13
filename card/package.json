@@ -1,0 +1,31 @@
+{
+  "name": "backend-butler-card",
+  "private": true,
+  "version": "1.1.0-beta.1",
+  "type": "module",
+  "description": "Home Assistant Lovelace card for Backend Butler (React + @livekit/components-react)",
+  "scripts": {
+    "build": "vite build",
+    "watch": "vite build --watch",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node tests/appearance-unit.cjs && node tests/voice-feedback-signals.cjs",
+    "test:browser": "node tests/house-companion.cjs"
+  },
+  "dependencies": {
+    "@livekit/components-react": "^2.9.25",
+    "livekit-client": "^2.23.0",
+    "motion": "^12.43.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "playwright": "^1.65.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.6"
+  }
+}

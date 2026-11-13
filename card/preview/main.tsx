@@ -1,0 +1,699 @@
+// Visual preview harness: mounts the REAL card components in a shadow root with mock data
+// so `chrome --headless --screenshot` shows exactly what ships. Not part of the build.
+import { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Conversation } from '../src/components/Conversation';
+import { DeviceTiles } from '../src/components/DeviceTiles';
+import { Dock } from '../src/components/Dock';
+import { Header } from '../src/components/Header';
+import { NowPlaying } from '../src/components/NowPlaying';
+import { ScheduledTasks } from '../src/components/ScheduledTasks';
+import { SchedulesTab } from '../src/components/SchedulesTab';
+import { SettingsTab } from '../src/components/SettingsTab';
+import { TextTab } from '../src/components/TextTab';
+import { useTextChat } from '../src/lib/text-chat';
+import { useTilesVisible } from '../src/lib/tiles-visible';
+import { TaskEditor } from '../src/components/TaskEditor';
+import { HassStoreProvider } from '../src/hass/context';
+import { HassStore } from '../src/hass/store';
+import type { ConvItem } from '../src/lib/conversation';
+import type { Task } from '../src/lib/tasks';
+import type { TasksApi } from '../src/lib/tasks-api';
+import { CARD_STYLES } from '../src/styles';
+
+// ---- stub ha-icon (mdi paths) so icons render outside Home Assistant ----
+const ICONS: Record<string, string> = {
+  'mdi:microphone': 'M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z',
+  'mdi:microphone-off': 'M19,11C19,12.19 18.66,13.3 18.1,14.28L16.87,13.05C17.14,12.43 17.3,11.74 17.3,11H19M15,11.16L9,5.18V5A3,3 0 0,1 12,2A3,3 0 0,1 15,5V11L15,11.16M4.27,3L21,19.73L19.73,21L15.54,16.81C14.77,17.27 13.91,17.58 13,17.72V21H11V17.72C7.72,17.23 5,14.41 5,11H6.7C6.7,14 9.24,16.1 12,16.1C12.81,16.1 13.6,15.91 14.31,15.58L12.65,13.92L12,14A3,3 0 0,1 9,11V10.28L3,4.27L4.27,3Z',
+  'mdi:arrow-up': 'M13,20H11V8L5.5,13.5L4.08,12.08L12,4.16L19.92,12.08L18.5,13.5L13,8V20Z',
+  'mdi:arrow-down': 'M11,4H13V16L18.5,10.5L19.92,11.92L12,19.84L4.08,11.92L5.5,10.5L11,16V4Z',
+  'mdi:plus': 'M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z',
+  'mdi:close': 'M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z',
+  'mdi:check': 'M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z',
+  'mdi:console': 'M20,19V7H4V19H20M20,3A2,2 0 0,1 22,5V19A2,2 0 0,1 20,21H4A2,2 0 0,1 2,19V5C2,3.89 2.9,3 4,3H20M13,17V15H18V17H13M9.58,13L5.57,9H8.4L11.7,12.3C12.09,12.69 12.09,13.33 11.7,13.72L8.42,17H5.59L9.58,13Z',
+  'mdi:pause': 'M14,19H18V5H14M6,19H10V5H6V19Z',
+  'mdi:play': 'M8,5.14V19.14L19,12.14L8,5.14Z',
+  'mdi:trash-can-outline': 'M9,3V4H4V6H5V19A2,2 0 0,0 7,21H17A2,2 0 0,0 19,19V6H20V4H15V3H9M7,6H17V19H7V6M9,8V17H11V8H9M13,8V17H15V8H13Z',
+  'mdi:lightbulb': 'M12,2A7,7 0 0,0 5,9C5,11.38 6.19,13.47 8,14.74V17A1,1 0 0,0 9,18H15A1,1 0 0,0 16,17V14.74C17.81,13.47 19,11.38 19,9A7,7 0 0,0 12,2M9,21A1,1 0 0,0 10,22H14A1,1 0 0,0 15,21V20H9V21Z',
+  'mdi:thermostat': 'M12,2A3,3 0 0,0 9,5V12.5C7.79,13.4 7,14.86 7,16.5A5,5 0 0,0 12,21.5A5,5 0 0,0 17,16.5C17,14.86 16.21,13.4 15,12.5V5A3,3 0 0,0 12,2M12,4A1,1 0 0,1 13,5V13.35L13.5,13.65C14.4,14.16 15,15.26 15,16.5A3,3 0 0,1 12,19.5A3,3 0 0,1 9,16.5C9,15.26 9.6,14.16 10.5,13.65L11,13.35V5A1,1 0 0,1 12,4Z',
+  'mdi:gauge': 'M12,3A9,9 0 0,0 3,12A9,9 0 0,0 12,21A9,9 0 0,0 21,12H19A7,7 0 0,1 12,19A7,7 0 0,1 5,12A7,7 0 0,1 12,5V7L15,4L12,1V3M12,12A2,2 0 0,0 10,14A2,2 0 0,0 12,16A2,2 0 0,0 14,14A2,2 0 0,0 12,12Z',
+  'mdi:flash': 'M11,15H6L13,1V9H18L11,23V15Z',
+  'mdi:radar': 'M19.07,4.93L17.66,6.34C19.1,7.79 20,9.79 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12C4,7.92 7.05,4.56 11,4.07V6.09C8.16,6.57 6,9.03 6,12A6,6 0 0,0 12,18A6,6 0 0,0 18,12C18,10.34 17.33,8.84 16.24,7.76L14.83,9.17C15.55,9.9 16,10.9 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12C8,10.14 9.27,8.59 11,8.14V10.28C10.4,10.63 10,11.26 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12C14,11.26 13.6,10.62 13,10.28V2H12A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12C22,9.24 20.88,6.74 19.07,4.93Z',
+  'mdi:waveform': 'M8,2C7.4,2 7,2.4 7,3V21C7,21.6 7.4,22 8,22C8.6,22 9,21.6 9,21V3C9,2.4 8.6,2 8,2M12,4C11.4,4 11,4.4 11,5V19C11,19.6 11.4,20 12,20C12.6,20 13,19.6 13,19V5C13,4.4 12.6,4 12,4M4,7C3.4,7 3,7.4 3,8V16C3,16.6 3.4,17 4,17C4.6,17 5,16.6 5,16V8C5,7.4 4.6,7 4,7M16,7C15.4,7 15,7.4 15,8V16C15,16.6 15.4,17 16,17C16.6,17 17,16.6 17,16V8C17,7.4 16.6,7 16,7M20,9C19.4,9 19,9.4 19,10V14C19,14.6 19.4,15 20,15C20.6,15 21,14.6 21,14V10C21,9.4 20.6,9 20,9Z',
+  'mdi:creation': 'M19,1L17.74,3.75L15,5L17.74,6.26L19,9L20.26,6.26L23,5L20.26,3.75L19,1M9,4L6.5,9.5L1,12L6.5,14.5L9,20L11.5,14.5L17,12L11.5,9.5L9,4M19,15L17.74,17.75L15,19L17.74,20.25L19,23L20.26,20.25L23,19L20.26,17.75L19,15Z',
+  'mdi:fan': 'M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12.5,2C17,2 17.11,5.57 14.75,6.75C13.76,7.24 13.32,8.29 13.13,9.22C13.61,9.42 14.03,9.73 14.35,10.13C18.05,8.13 22.03,8.92 22.03,12.5C22.03,17 18.46,17.1 17.28,14.73C16.79,13.74 15.74,13.3 14.81,13.11C14.61,13.59 14.3,14 13.9,14.34C15.9,18.04 15.11,22 11.53,22C7.03,22 6.93,18.45 9.29,17.27C10.28,16.78 10.72,15.73 10.91,14.8C10.43,14.6 10.02,14.29 9.69,13.89C5.99,15.89 2,15.1 2,11.5C2,7 5.58,6.91 6.76,9.27C7.25,10.26 8.29,10.71 9.22,10.9C9.42,10.41 9.73,10 10.13,9.67C8.13,5.97 8.92,2 12.5,2Z',
+  'mdi:toggle-switch-variant': 'M16,7A5,5 0 0,1 21,12A5,5 0 0,1 16,17H8A5,5 0 0,1 3,12A5,5 0 0,1 8,7H16M16,9A3,3 0 0,0 13,12A3,3 0 0,0 16,15A3,3 0 0,0 19,12A3,3 0 0,0 16,9Z',
+  'mdi:magnify': 'M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z',
+  'mdi:refresh': 'M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z',
+  'mdi:calendar-clock': 'M15,13H16.5V15.82L18.94,17.23L18.19,18.53L15,16.69V13M19,8H5V19H9.67C9.24,18.09 9,17.07 9,16A7,7 0 0,1 16,9C17.07,9 18.09,9.24 19,9.67V8M5,21C3.89,21 3,20.1 3,19V5C3,3.89 3.89,3 5,3H6V1H8V3H16V1H18V3H19A2,2 0 0,1 21,5V11.1C22.24,12.36 23,14.09 23,16A7,7 0 0,1 16,23C14.09,23 12.36,22.24 11.1,21H5M16,11.15A4.85,4.85 0 0,0 11.15,16C11.15,18.68 13.32,20.85 16,20.85A4.85,4.85 0 0,0 20.85,16C20.85,13.32 18.68,11.15 16,11.15Z',
+  'mdi:repeat': 'M17,17H7V14L3,18L7,22V19H19V13H17M7,7H17V10L21,6L17,2V5H5V11H7V7Z',
+  'mdi:clock-outline': 'M12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12.5,7H11V13L15.75,15.85L16.5,14.62L12.5,12.25V7Z',
+  'mdi:check-circle-outline': 'M12,2C6.48,2 2,6.48 2,12C2,17.52 6.48,22 12,22C17.52,22 22,17.52 22,12C22,6.48 17.52,2 12,2M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M16.59,7.58L10,14.17L7.41,11.59L6,13L10,17L18,9L16.59,7.58Z',
+  'mdi:cancel': 'M12,2C17.53,2 22,6.47 22,12C22,17.53 17.53,22 12,22C6.47,22 2,17.53 2,12C2,6.47 6.47,2 12,2M12,4C10.17,4 8.47,4.62 7.11,5.66L18.34,16.89C19.38,15.53 20,13.83 20,12C20,7.58 16.42,4 12,4M16.89,18.34L5.66,7.11C4.62,8.47 4,10.17 4,12C4,16.42 7.58,20 12,20C13.83,20 15.53,19.38 16.89,18.34Z',
+  'mdi:alert-circle-outline': 'M11,15H13V17H11V15M11,7H13V13H11V7M12,2C6.47,2 2,6.5 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20Z',
+  'mdi:calendar-blank-outline': 'M19,4H18V2H16V4H8V2H6V4H5A2,2 0 0,0 3,6V20A2,2 0 0,0 5,22H19A2,2 0 0,0 21,20V6A2,2 0 0,0 19,4M19,20H5V10H19V20M19,8H5V6H19V8Z',
+  'mdi:bell-outline': 'M16,17H7V10.5C7,8 9,6 11.5,6C14,6 16,8 16,10.5M18,16V10.5C18,7.43 15.86,4.86 13,4.18V3.5A1.5,1.5 0 0,0 11.5,2A1.5,1.5 0 0,0 10,3.5V4.18C7.13,4.86 5,7.43 5,10.5V16L3,18V19H20V18M11.5,22A2,2 0 0,0 13.5,20H9.5A2,2 0 0,0 11.5,22Z',
+  'mdi:cellphone': 'M17,19H7V5H17M17,1H7C5.89,1 5,1.89 5,3V21A2,2 0 0,0 7,23H17A2,2 0 0,0 19,21V3C19,1.89 18.1,1 17,1Z',
+  'mdi:view-grid-outline': 'M3,11H11V3H3M5,5H9V9H5M13,21H21V13H13M15,15H19V19H15M3,21H11V13H3M5,15H9V19H5M13,3V11H21V3M19,9H15V5H19Z',
+  'mdi:message-plus-outline': 'M12,3C17.5,3 22,6.58 22,11C22,15.42 17.5,19 12,19C10.76,19 9.57,18.82 8.47,18.5C5.55,21 2,21 2,21C4.33,18.67 4.7,17.1 4.75,16.5C3.05,15.07 2,13.13 2,11C2,6.58 6.5,3 12,3M11,14H13V12H15V10H13V8H11V10H9V12H11V14Z',
+  'mdi:send': 'M2,21L23,12L2,3V10L17,12L2,14V21Z',
+  'mdi:history': 'M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3',
+  'mdi:arrow-left': 'M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z',
+  'mdi:message-text-outline': 'M20,2H4A2,2 0 0,0 2,4V22L6,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M20,16H5.17L4,17.17V4H20V16M6,7H18V9H6V7M6,11H15V13H6V11Z',
+  'mdi:message-reply-text-outline': 'M9,11H18V13H9V11M18,7H6V9H18V7M22,4V22L18,18H4A2,2 0 0,1 2,16V4A2,2 0 0,1 4,2H20A2,2 0 0,1 22,4M20,4H4V16H18.83L20,17.17V4Z',
+  'mdi:music-note': 'M12,3V13.55C11.41,13.21 10.73,13 10,13A4,4 0 0,0 6,17A4,4 0 0,0 10,21A4,4 0 0,0 14,17V7H18V3H12Z',
+  'mdi:skip-previous': 'M6,18V6H8V18H6M9.5,12L18,6V18L9.5,12Z',
+  'mdi:stop': 'M18,18H6V6H18V18Z',
+  'mdi:skip-next': 'M16,18H18V6H16M6,18L14.5,12L6,6V18Z',
+  'mdi:volume-medium': 'M5,9V15H9L14,20V4L9,9M18.5,12C18.5,10.23 17.5,8.71 16,7.97V16C17.5,15.29 18.5,13.76 18.5,12Z',
+  'mdi:volume-off': 'M12,4L9.91,6.09L12,8.18M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.53C15.58,18.04 14.83,18.46 14,18.7V20.77C15.38,20.45 16.63,19.82 17.68,18.96L19.73,21L21,19.73L12,10.73M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.62,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12Z',
+  'mdi:chevron-down': 'M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z',
+};
+class HaIcon extends HTMLElement {
+  static get observedAttributes() { return ['icon']; }
+  connectedCallback() { this.render(); }
+  attributeChangedCallback() { this.render(); }
+  render() {
+    const d = ICONS[this.getAttribute('icon') || ''] || 'M12,7A5,5 0 0,0 7,12A5,5 0 0,0 12,17A5,5 0 0,0 17,12A5,5 0 0,0 12,7Z';
+    this.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" style="width:var(--mdc-icon-size,24px);height:var(--mdc-icon-size,24px);display:block"><path d="${d}"/></svg>`;
+  }
+}
+if (!customElements.get('ha-icon')) customElements.define('ha-icon', HaIcon);
+
+// ---- mock hass ----
+function ent(entity_id: string, state: string, friendly_name: string, unit?: string) {
+  return { entity_id, state, attributes: unit ? { friendly_name, unit_of_measurement: unit } : { friendly_name } };
+}
+// Study entities live in the configured area; the living-room entities do NOT — they
+// only appear as tiles if the agent acts on them, which is exactly what the new pop-up logic
+// must surface (cross-area climate set, script fan-out).
+const ENT_AREA: Record<string, string> = {
+  'light.study_spot': 'study',
+  'light.study_strip': 'study',
+  'climate.study_ac': 'study',
+  'fan.study_fan': 'study',
+  'sensor.study_temp': 'study',
+  'sensor.study_hum': 'study',
+  'climate.living_ac': 'living',
+  'script.movie': 'living',
+  'light.living_main': 'living',
+  'cover.living_curtain': 'living',
+};
+const STATES: Record<string, any> = {
+  'light.study_spot': ent('light.study_spot', 'on', 'Study spotlight'),
+  'light.study_strip': ent('light.study_strip', 'on', 'Study light strip'),
+  'climate.study_ac': ent('climate.study_ac', 'cool', 'Study AC'),
+  'fan.study_fan': ent('fan.study_fan', 'off', 'Study circulating fan'),
+  'sensor.study_temp': ent('sensor.study_temp', '26.5', 'Study temperature and humidity', '°C'),
+  'sensor.study_hum': ent('sensor.study_hum', '57', 'Study humidity', '%'),
+  'climate.living_ac': ent('climate.living_ac', 'cool', 'Living room AC'),
+  'script.movie': ent('script.movie', 'off', 'Movie mode'),
+  'light.living_main': ent('light.living_main', 'on', 'Living room main light'),
+  'cover.living_curtain': ent('cover.living_curtain', 'open', 'Living room curtain'),
+};
+const ENTITIES: Record<string, any> = {};
+for (const id of Object.keys(STATES)) ENTITIES[id] = { entity_id: id, area_id: ENT_AREA[id] ?? 'study' };
+// ?music shows the music player playing, ?musicpaused paused; it is not voice-exposed
+const MUSIC = new URLSearchParams(location.search);
+if (MUSIC.has('music') || MUSIC.has('musicpaused')) {
+  STATES['media_player.backend_butler_music'] = {
+    entity_id: 'media_player.backend_butler_music',
+    state: MUSIC.has('music') ? 'playing' : 'paused',
+    attributes: {
+      friendly_name: 'Music',
+      media_title: MUSIC.get('title') ?? 'Sunny Day',
+      media_artist: 'Jay Chou',
+      media_album_name: 'Ye Huimei',
+      source: 'AirPlay Living Room',
+      volume_level: 0.35,
+      media_duration: 269,
+      media_position: 96,
+      media_position_updated_at: new Date().toISOString(),
+    },
+  };
+  ENTITIES['media_player.backend_butler_music'] = { entity_id: 'media_player.backend_butler_music', platform: 'backend_butler' };
+}
+const mockHass: any = {
+  states: STATES,
+  entities: ENTITIES,
+  devices: {},
+  areas: { study: { name: 'Study' }, living: { name: 'Living Room' } },
+  services: {
+    notify: {
+      persistent_notification: {},
+      notify: {},
+      send_message: {},
+      mobile_app_longs_iphone: {},
+      mobile_app_ipad: {},
+    },
+  },
+  // ?nonadmin — a viewer who cannot list HA accounts
+  user: { id: 'u-long', name: 'Long', is_admin: !location.search.includes('nonadmin') },
+  callWS: async (msg: any) => msg?.type === 'config/auth/list' ? [
+    { id: 'u-long', name: 'Long', system_generated: false },
+    { id: 'u-mia', name: 'Mia', system_generated: false },
+    { id: 'u-sys', name: 'Supervisor', system_generated: true },
+  ] : ({
+    exposed_entities: Object.fromEntries(Object.keys(STATES).filter((id) => !id.startsWith('media_player.')).map((id) => [id, { conversation: true }])),
+  }),
+  callService: async () => {},
+  callApi: async (method: string, path: string, params?: any) => {
+    if (path.startsWith('backend_butler/chat/history')) {
+      const t = Date.now() - 60_000;
+      const chips = location.search.includes('chips') ? ['Confirm', 'Cancel'] : [];
+      // ?busy runs a turn whose task id is known; add &notask for the first second before it is
+      const busy = location.search.includes('busy');
+      const task_id = busy && !location.search.includes('notask') ? 'task_preview' : null;
+      return { conversation_id: 'DB_preview', busy: busy || SENT.busy, task_id, items: [...(SENT.fresh ? [] : MOCK_TEXT(t)), ...SENT.items], suggestions: chips, usage: SENT.fresh ? null : { input: 48213, output: 1387, cached: 31744 } };
+    }
+    if (path.startsWith('backend_butler/chat/cancel')) return { cancelled: true };
+    if (path.startsWith('backend_butler/chat/conversations')) {
+      const now = Date.now();
+      return {
+        current: 'DB_preview',
+        conversations: [
+          { id: 'DB_preview', title: 'What's in the study?', created: now - 3_600_000, updated: now - 60_000 },
+          { id: 'DB_b', title: 'Turn off the study spotlight in one hour', created: now - 90_000_000, updated: now - 86_000_000 },
+          { id: 'DB_c', title: 'Turn off every light downstairs and close the living room curtains', created: now - 200_000_000, updated: now - 190_000_000 },
+          { id: 'DB_d', title: '', created: now - 300_000_000, updated: now - 300_000_000 },
+        ],
+      };
+    }
+    if (path.startsWith('backend_butler/chat/warm')) return { warming: false };
+    if (path.startsWith('backend_butler/chat/switch')) return { switched: true };
+    if (path.startsWith('backend_butler/chat/delete')) return { deleted: true };
+    if (path === 'backend_butler/chat' && params?.new) {
+      // starting a conversation takes the worker a moment
+      await new Promise((r) => setTimeout(r, 1500));
+      SENT.fresh = true;
+      SENT.items = [];
+      return 'Started a new conversation.';
+    }
+    if (path === 'backend_butler/chat' && params?.text) {
+      // a sent message reaches the conversation shortly, and its reply a moment later
+      const n = SENT.items.length;
+      SENT.busy = true;
+      setTimeout(() => SENT.items.push({ kind: 'message', id: `s${n}`, role: 'user', text: params.text, ts: Date.now() }), 300);
+      await new Promise((r) => setTimeout(r, 1500));
+      SENT.items.push({ kind: 'message', id: `s${n + 1}`, role: 'agent', text: `Got it: ${params.text}`, ts: Date.now() });
+      SENT.busy = false;
+      return 'ok';
+    }
+    if (path.startsWith('backend_butler/chat')) return 'ok';
+    if (path.startsWith('backend_butler/settings')) {
+      return method === 'PUT'
+        ? params
+        : {
+            users: [
+              {
+                id: 'long',
+                name: 'Long',
+                ha_user_id: 'u-long',
+                notify_targets: ['mobile_app_ipad', 'mobile_app_longs_iphone'],
+                servers: ['herdr'],
+              },
+              { id: 'mia', name: 'Mia', ha_user_id: null, notify_targets: [] },
+            ],
+            servers: [{ id: 'herdr', title: 'Coding agents (herdr)' }],
+          };
+    }
+    return {};
+  },
+};
+
+const store = new HassStore();
+store.setConfig({ type: 'backend-butler-card', title: 'Home Voice', input_mode: 'auto', areas: ['Study'] });
+store.setHass(mockHass);
+
+// ?scenario=climate — agent sets the living room AC directly, no get_devices for that area.
+// ?scenario=script  — agent runs movie mode (verb-less script tool); its fan-out is simulated
+//                     below by mutating live state inside the state-diff window.
+const SCENARIO = new URLSearchParams(location.search).get('scenario');
+const SCENARIOS: Record<string, { toolCalls: any[]; agentAreas: string[]; query: string }> = {
+  default: {
+    toolCalls: [
+      { callId: 'a1', name: 'get_devices', args: { area: 'Study' }, status: 'done', startedAt: 1 },
+      { callId: 'a2', name: 'HassTurnOn', args: { name: 'Study spotlight' }, status: 'done', startedAt: 3 },
+      // latest action targets the strip — only this tile should carry the highlight
+      { callId: 'a3', name: 'HassTurnOn', args: { name: 'Study light strip' }, status: 'done', startedAt: 7 },
+    ],
+    agentAreas: ['Study'],
+    query: 'Turn on the spotlight',
+  },
+  climate: {
+    toolCalls: [
+      { callId: 'c1', name: 'HassClimateSetTemperature', args: { name: 'Living room AC' }, status: 'done', startedAt: 3 },
+    ],
+    agentAreas: [],
+    query: 'Set the living room AC to 24 degrees',
+  },
+  script: {
+    toolCalls: [{ callId: 's1', name: 'Movie mode', args: {}, status: 'running', startedAt: 3 }],
+    agentAreas: [],
+    query: 'Start movie mode',
+  },
+  // ?scenario=schedule — a function_call schedule targeting the study spotlight; its tile should pin
+  // to the front + highlight, just like an immediate action.
+  schedule: {
+    toolCalls: [
+      { callId: 'sd1', name: 'get_devices', args: { area: 'Study' }, status: 'done', startedAt: 1 },
+      {
+        callId: 'sd2',
+        name: 'schedule_task',
+        args: {
+          description: 'Turn on the study spotlight in one hour',
+          schedule_type: 'once',
+          steps: [{ tool: 'HassTurnOn', args: { name: 'Study spotlight' } }],
+        },
+        status: 'done',
+        startedAt: 5,
+      },
+    ],
+    agentAreas: ['Study'],
+    query: 'Turn on the study spotlight in one hour',
+  },
+};
+const SCN = SCENARIOS[SCENARIO ?? 'default'] ?? SCENARIOS.default;
+const toolCalls = SCN.toolCalls;
+
+const items: ConvItem[] = [
+  { kind: 'message', id: 'm1', role: 'user', text: 'What's in the study?', ts: 1 },
+  { kind: 'action', id: 'a1', ts: 2, name: 'get_devices', args: { area: 'Study' }, status: 'done' },
+  { kind: 'message', id: 'm2', role: 'agent', text: 'The study has a spotlight, a light strip, an AC, a circulating fan, and a temperature and humidity sensor.', ts: 3 },
+  { kind: 'message', id: 'm3', role: 'user', text: 'Turn on the spotlight', ts: 4 },
+  { kind: 'action', id: 'a2', ts: 5, name: 'HassTurnOn', args: { name: 'Study spotlight' }, status: 'done' },
+  { kind: 'message', id: 'm4', role: 'agent', text: 'Done, the study spotlight is on.', ts: 6 },
+  { kind: 'action', id: 'a3', ts: 7, name: 'GetLiveContext', args: {}, status: 'running' },
+];
+if (location.search.includes('chips')) {
+  items.push(
+    { kind: 'message', id: 'm5', role: 'user', text: 'Turn off the study spotlight in one hour', ts: 8 },
+    { kind: 'message', id: 'm6', role: 'agent', text: 'I'll turn off the study spotlight at 9:30 tonight. Confirm?', ts: 9 },
+  );
+}
+
+const OFF = location.search.includes('off');
+const P = location.search;
+
+// ?sched — show the scheduled-task rail in chat. ?tab=schedules — open the Schedules tab.
+// ?editor — open the task editor over MOCK_TASKS[0].
+const SHOW_SCHED = P.includes('sched') || P.includes('tab=schedules') || P.includes('editor');
+const MOCK_TASKS: Task[] = [
+  {
+    id: 't1',
+    description: 'Remind me to buy hand soap',
+    schedule_type: 'once',
+    run_at: '2026-07-22T21:30:00+08:00',
+    timezone: 'Asia/Shanghai',
+    execution: { notification: { message: 'Time to buy hand soap' } },
+    status: 'scheduled',
+    enabled: true,
+    created_at: '2026-07-22T20:30:00+08:00',
+    next_run_at: '2026-07-22T21:30:00+08:00',
+  },
+  {
+    id: 't2',
+    description: 'Turn on the balcony light every morning',
+    schedule_type: 'recurring',
+    cron: '0 8 * * *',
+    timezone: 'Asia/Shanghai',
+    execution: { instruction: 'Turn on the balcony light' },
+    status: 'scheduled',
+    enabled: true,
+    created_at: '2026-07-20T09:00:00+08:00',
+    next_run_at: '2026-07-23T08:00:00+08:00',
+  },
+  {
+    id: 't3',
+    description: 'Turn off the living room lights on weekday evenings',
+    schedule_type: 'recurring',
+    cron: '0 23 * * 1-5',
+    timezone: 'Asia/Shanghai',
+    execution: { instruction: 'Turn off all the living room lights' },
+    status: 'scheduled',
+    enabled: false,
+    created_at: '2026-07-19T09:00:00+08:00',
+    next_run_at: '2026-07-22T23:00:00+08:00',
+  },
+  {
+    id: 't4',
+    description: 'Tell me the weather in the morning',
+    schedule_type: 'once',
+    run_at: '2026-07-21T15:00:00+08:00',
+    timezone: 'Asia/Shanghai',
+    execution: { instruction: 'Tell me today's weather' },
+    status: 'completed',
+    enabled: true,
+    created_at: '2026-07-21T14:00:00+08:00',
+    next_run_at: null,
+  },
+];
+
+const mockApi: TasksApi = {
+  tasks: MOCK_TASKS,
+  loading: false,
+  error: null,
+  freshId: 't1',
+  refresh: async () => {},
+  save: async () => {},
+  remove: async () => {},
+};
+
+// URL params drive the reviewable states: ?off (disconnected), ?auto (auto mode),
+// ?active (manual turn in progress), ?paused (auto input muted), ?starting (mic cold-start).
+// Default: manual, idle.
+function Preview() {
+  const [mode, setMode] = useState<'auto' | 'manual'>(
+    P.includes('auto') || P.includes('paused') ? 'auto' : 'manual',
+  );
+  const [turnActive, setTurnActive] = useState(P.includes('active') || P.includes('starting'));
+  const [autoPaused, setAutoPaused] = useState(P.includes('paused'));
+  const [micStarting, setMicStarting] = useState(P.includes('starting'));
+  const [audioOutput, setAudioOutput] = useState(P.includes('audio'));
+  const [tab, setTab] = useState<'chat' | 'text' | 'schedules' | 'settings'>(
+    P.includes('tab=settings')
+      ? 'settings'
+      : P.includes('tab=schedules')
+        ? 'schedules'
+        : P.includes('tab=text')
+          ? 'text'
+          : 'chat',
+  );
+  const [editing, setEditing] = useState<Task | null>(P.includes('editor') ? MOCK_TASKS[0] : null);
+  const [tilesVisible, toggleTiles] = useTilesVisible();
+  const orbState = new URLSearchParams(location.search).get('state') || (OFF ? 'idle' : 'listening');
+  const STATE_LABELS: Record<string, string> = {
+    idle: 'Ready', connecting: 'Connecting', listening: 'Listening', thinking: 'Thinking', speaking: 'Speaking',
+    dozing: 'Sleeping',
+  };
+  return (
+    <HassStoreProvider value={store}>
+      <ha-card data-dock={OFF ? 'off' : mode} data-tall={tab !== 'chat' || editing ? '1' : '0'}>
+        <Header
+          orbState={orbState}
+          title="Home Voice"
+          connected={!OFF}
+          mode={mode}
+          onModeChange={setMode}
+          stateLabel={STATE_LABELS[orbState] ?? 'Connected'}
+          audioOutput={audioOutput}
+          onToggleAudioOutput={() => setAudioOutput((v) => !v)}
+          onEnd={() => {}}
+        />
+        <div className="lk-tabs" role="tablist">
+          <button className="lk-tab" data-on={tab === 'chat' ? '1' : '0'} onClick={() => setTab('chat')}>
+            Chat
+          </button>
+          <button className="lk-tab" data-on={tab === 'text' ? '1' : '0'} onClick={() => setTab('text')}>
+            Text
+          </button>
+          <button
+            className="lk-tab"
+            data-on={tab === 'schedules' ? '1' : '0'}
+            onClick={() => setTab('schedules')}
+          >
+            Schedules
+          </button>
+          <button
+            className="lk-tab"
+            data-on={tab === 'settings' ? '1' : '0'}
+            onClick={() => setTab('settings')}
+          >
+            Settings
+          </button>
+          {(tab === 'chat' || tab === 'text') && (
+            <button
+              className="lk-iconbtn lk-tabs-end"
+              data-on={tilesVisible ? '1' : '0'}
+              onClick={toggleTiles}
+              aria-label={tilesVisible ? 'Hide devices' : 'Show devices'}
+            >
+              <ha-icon icon="mdi:view-grid-outline" />
+            </button>
+          )}
+        </div>
+        {(tab === 'chat' || tab === 'text') && <NowPlaying />}
+        {tab === 'chat' ? (
+          <>
+            {!P.includes('notiles') && (
+              <DeviceTiles hidden={!tilesVisible} agentAreas={SCN.agentAreas} toolCalls={toolCalls as any} query={SCN.query} showRecent={!OFF} />
+            )}
+            {SHOW_SCHED && (
+              <ScheduledTasks
+                tasks={MOCK_TASKS}
+                freshId="t1"
+                onOpen={setEditing}
+                onSeeAll={() => setTab('schedules')}
+              />
+            )}
+            <Conversation items={OFF ? [] : items} reflowKey={P.includes('chips')} />
+            <Dock
+              connected={!OFF}
+              connecting={false}
+              mode={mode}
+              turnActive={turnActive}
+              autoPaused={autoPaused}
+              micStarting={micStarting}
+              onSend={async () => {}}
+              onTurnStart={() => {
+                setTurnActive(true);
+                setMicStarting(true);
+                setTimeout(() => setMicStarting(false), 1200);
+              }}
+              onTurnEnd={() => {
+                setTurnActive(false);
+                setMicStarting(false);
+              }}
+              onTurnCancel={() => {
+                setTurnActive(false);
+                setMicStarting(false);
+              }}
+              onPause={() => setAutoPaused(true)}
+              onResume={() => {
+                setAutoPaused(false);
+                setMicStarting(true);
+                setTimeout(() => setMicStarting(false), 1200);
+              }}
+              suggestions={P.includes('chips') ? ['Confirm', 'Cancel'] : undefined}
+            />
+          </>
+        ) : tab === 'text' ? (
+          <PreviewTextTab showTiles={tilesVisible} />
+        ) : tab === 'schedules' ? (
+          <SchedulesTab api={mockApi} onOpen={setEditing} />
+        ) : (
+          <SettingsTab />
+        )}
+        {editing && (
+          <TaskEditor
+            task={editing}
+            onClose={() => setEditing(null)}
+            onSave={async () => {}}
+            onDelete={async () => {}}
+          />
+        )}
+      </ha-card>
+    </HassStoreProvider>
+  );
+}
+
+const LIGHT = location.search.includes('light');
+const THEME = LIGHT
+  ? '--primary-color:#2b6fff;--text-primary-color:#fff;--primary-text-color:#1f2023;--secondary-text-color:#5f6368;--card-background-color:#ffffff;--secondary-background-color:#eef0f3;--divider-color:rgba(0,0,0,0.12);--error-color:#d93025;--success-color:#1e8e3e;'
+  : '--primary-color:#4c8dff;--text-primary-color:#fff;--primary-text-color:#e9eaee;--secondary-text-color:#9aa1ac;--card-background-color:#16181d;--secondary-background-color:rgba(255,255,255,0.055);--divider-color:rgba(255,255,255,0.09);--error-color:#f0483e;--success-color:#21b573;';
+
+document.body.style.background = LIGHT ? '#f2f3f5' : '#0b0c0f';
+
+// Simulate Home Assistant's real ha-card chrome (background + border/shadow) so the
+// preview shows any overlap between our content and the card border.
+const HA_CARD = LIGHT
+  ? 'background:var(--card-background-color);border:1px solid rgba(0,0,0,0.06);box-shadow:0 2px 10px rgba(0,0,0,0.10);'
+  : 'background:var(--card-background-color);border:1px solid rgba(255,255,255,0.06);box-shadow:0 2px 12px rgba(0,0,0,0.5);';
+
+const host = document.getElementById('frame')!;
+const shadow = host.attachShadow({ mode: 'open' });
+const style = document.createElement('style');
+// Match production sizing: the card is content-sized (capped via max-height in CARD_STYLES),
+// so we DON'T force ha-card to fill the frame — we only apply the HA card chrome.
+// ?h=N — raise the card's height cap to N px, to review a tall timeline in one shot
+const CAP = new URLSearchParams(location.search).get('h');
+style.textContent = CARD_STYLES + `\n:host{${THEME}${CAP ? `--lk-h:${Number(CAP)}px;` : ''}} ha-card{${HA_CARD}}`;
+const mount = document.createElement('div');
+mount.className = 'lk-root';
+shadow.append(style, mount);
+createRoot(mount).render(<Preview />);
+// ?hiddenmount — mount the card undisplayed and show it later, like a dashboard view opened after load
+if (P.includes('hiddenmount')) {
+  host.style.display = 'none';
+  setTimeout(() => (host.style.display = ''), 800);
+}
+// ?open — expand the first person in the Settings tab and scroll to its end (+top: stay at the top)
+if (P.includes('open'))
+  setTimeout(() => {
+    (shadow.querySelector('.lk-person-main') as HTMLElement | null)?.click();
+    if (!P.includes('top')) setTimeout(() => {
+      const sc = shadow.querySelector('.lk-settings-scroll');
+      if (sc) sc.scrollTop = sc.scrollHeight;
+    }, 100);
+  }, 300);
+
+// ?hist — open the Text tab's conversation list (=N: then open the Nth row, =delN: arm its delete)
+const HIST = new URLSearchParams(location.search).get('hist');
+if (HIST != null)
+  setTimeout(() => {
+    (shadow.querySelector('[aria-label="Conversations"]') as HTMLElement | null)?.click();
+    if (HIST) setTimeout(() => {
+      const n = Number(HIST.replace('del', ''));
+      const sel = HIST.startsWith('del') ? '.lk-taskrow-del' : '.lk-taskrow-main';
+      shadow.querySelectorAll<HTMLElement>(sel)[n]?.click();
+    }, 300);
+  }, 400);
+
+// ?expand=N — tap the Nth tool-call row and scroll it to the top of the timeline (+stay: leave the view where it is)
+const EXPAND = new URLSearchParams(location.search).get('expand');
+if (EXPAND != null)
+  setTimeout(() => {
+    const row = shadow.querySelectorAll<HTMLButtonElement>('.lk-act')[Number(EXPAND)];
+    row?.click();
+    if (!P.includes('stay')) setTimeout(() => {
+      const convo = shadow.querySelector<HTMLElement>('.lk-convo');
+      if (convo && row) convo.scrollTop += row.getBoundingClientRect().top - convo.getBoundingClientRect().top - 8;
+    }, 100);
+  }, 600);
+
+// ?busy&stopping — tap the stop button once it is enabled, to show the stopping state; as the
+// preview stays busy, the button turns into force stop 1.5 s later
+if (location.search.includes('stopping')) {
+  const tap = setInterval(() => {
+    const btn = shadow.querySelector<HTMLButtonElement>('.lk-stop:not(:disabled)');
+    if (btn) {
+      clearInterval(tap);
+      btn.click();
+    }
+  }, 200);
+}
+
+// Preview-only: the timeline lands at the top by design, so scroll it to the bottom when
+// reviewing the quick-reply chips (?chips) to check the tail isn't hidden behind them.
+if (location.search.includes('chips')) {
+  setTimeout(() => {
+    const convo = shadow.querySelector('.lk-convo') as HTMLElement | null;
+    if (convo) convo.scrollTop = convo.scrollHeight;
+  }, 400);
+}
+
+// Simulate the movie mode script's fan-out: shortly after mount (inside the state-diff window),
+// the curtain closes and the living-room light turns off. The card should detect these live
+// changes and pop them up alongside the script tile.
+if (SCENARIO === 'script') {
+  setTimeout(() => {
+    store.setHass({
+      ...mockHass,
+      states: {
+        ...STATES,
+        'cover.living_curtain': ent('cover.living_curtain', 'closed', 'Living room curtain'),
+        'light.living_main': ent('light.living_main', 'off', 'Living room main light'),
+      },
+    });
+  }, 500);
+}
+
+const SENT: { busy: boolean; fresh: boolean; items: any[] } = { busy: false, fresh: false, items: [] };
+
+// the persisted text conversation, as /chat/history returns it (?tab=text, +busy)
+function MOCK_TEXT(t: number) {
+  const running = location.search.includes('busy');
+  return [
+    { kind: 'message', id: 'm1', role: 'user', text: 'Are the living room lights on?', ts: t },
+    { kind: 'action', id: 'a1', ts: t + 1, name: 'GetLiveContext', args: { area: 'Living Room', domain: ['light', 'switch'] }, status: 'done' },
+    { kind: 'message', id: 'm2', role: 'agent', text: 'The living room accent light is on. The living room lights and the hallway lights are off.', ts: t + 2 },
+    { kind: 'message', id: 'm3', role: 'user', text: 'Turn off the accent light', ts: t + 3 },
+    { kind: 'action', id: 'a2', ts: t + 4, name: 'HassTurnOff', args: { name: 'Accent light TV left' }, status: running ? 'running' : 'done' },
+    ...(running ? [] : [{ kind: 'message', id: 'm4', role: 'agent', text: 'The accent light is off.', ts: t + 5 }]),
+    // ?update — an MCP server's update, which the worker returns as a row, not as the person
+    ...(location.search.includes('update')
+      ? [
+          {
+            kind: 'action', id: 'u1', call_id: 'u1', ts: t + 6, name: 'update_from', args: { name: 'Claude Code' },
+            status: 'done', output: '"RAM check" finished.\nLast message: 12 GB of 16 GB in use.',
+          },
+          { kind: 'message', id: 'u2', role: 'agent', text: 'Claude Code's memory check finished: 12 GB of 16 GB is in use.', ts: t + 7 },
+        ]
+      : []),
+    ...(location.search.includes('md') ? MD_ITEMS(t + 6) : []),
+    ...(location.search.includes('tools') ? TOOL_ITEMS(t + 6) : []),
+  ];
+}
+
+// ?tools — finished calls with output: a clipped JSON result and a failed call (+expand=N taps the Nth row)
+function TOOL_ITEMS(t: number) {
+  const entities = Array.from({ length: 60 }, (_, i) => ({
+    entity_id: `light.living_${i}`, name: `Living room light ${i}`, state: i % 3 ? 'off' : 'on', area: 'Living Room',
+    attributes: { brightness: 128 + i, color_mode: 'brightness', supported_features: 44 },
+  }));
+  const full = JSON.stringify({ success: true, result: { entities, count: entities.length } });
+  return [
+    { kind: 'message', id: 't1', role: 'user', text: 'What lights are in the living room?', ts: t },
+    {
+      kind: 'action', id: 'h-t2', call_id: 'call_live', ts: t + 1, name: 'GetLiveContext',
+      args: { area: 'Living Room', domain: ['light'], include: { attributes: true, state: true } },
+      status: 'done', output: full.slice(0, 1000) + '…', output_chars: full.length,
+    },
+    { kind: 'message', id: 't3', role: 'user', text: 'Set the balcony light to 50%', ts: t + 2 },
+    {
+      kind: 'action', id: 'h-t4', call_id: 'call_fail', ts: t + 3, name: 'HassLightSet',
+      args: { name: 'Balcony light', brightness: 50 }, status: 'error',
+      output: 'MatchFailedError: no entity named "Balcony light" is exposed to the voice assistant',
+    },
+    { kind: 'message', id: 't5', role: 'agent', text: 'I couldn't find the balcony light. It may not be exposed to the voice assistant.', ts: t + 4 },
+  ];
+}
+
+// ?md — agent replies exercising the Markdown renderer (and a user message that must stay literal)
+function MD_ITEMS(t: number) {
+  return [
+    { kind: 'message', id: 'md1', role: 'user', text: 'which lights are on? **not bold** <b>raw</b>', ts: t },
+    {
+      kind: 'message', id: 'md2', role: 'agent', ts: t + 1,
+      text: [
+        '### Living room',
+        'Two lights are **on** and one is *dimmed*:',
+        '',
+        '- **Accent light** — on, 60%',
+        '- Ceiling `light.living_main` — on',
+        '  - scene: ~~movie~~ evening',
+        '- Hallway — off',
+        '',
+        '1. Say "turn off all"',
+        '2. Or tap a tile',
+        '',
+        '> Tip: schedules live in the Schedules tab.',
+        '',
+        '| Device | State |',
+        '|---|---|',
+        '| Accent light | on |',
+        '| Hallway | off |',
+        '',
+        'Docs: [HA scripts](https://www.home-assistant.io/docs/scripts/) or https://example.com/a_b.',
+        '<img src=x onerror="alert(1)"> [bad](javascript:alert(1)) [wiki](https://en.wikipedia.org/wiki/Hue_(color))',
+      ].join('\n'),
+    },
+    {
+      kind: 'message', id: 'md3', role: 'agent', ts: t + 2,
+      text: 'Here is the automation:\n\n```yaml\nalias: Evening lights\ntrigger:\n  - platform: sun\n    event: sunset\naction:\n  - service: light.turn_on\n    target: { entity_id: light.living_main }\n```',
+    },
+  ];
+}
+
+function PreviewTextTab({ showTiles }: { showTiles: boolean }) {
+  return (
+    <TextTab
+      api={useTextChat(true)}
+      // ?bare — no tiles or schedules rail, leaving the timeline the whole card
+      tasksApi={P.includes('bare') ? { ...mockApi, tasks: [] } : mockApi}
+      showTiles={showTiles && !P.includes('bare')}
+      onOpenTask={() => {}}
+      onSeeAllTasks={() => {}}
+    />
+  );
+}

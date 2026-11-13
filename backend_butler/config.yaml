@@ -1,0 +1,30 @@
+name: Backend Butler
+version: "0.7.0"
+slug: backend_butler
+description: An AI agent that controls Home Assistant and edits automations with your approval.
+url: https://github.com/taylorsegell/backend-butler-public
+arch:
+  - amd64
+  - aarch64
+init: false
+ingress: true
+panel_admin: true
+homeassistant_api: true
+ports:
+  8098/tcp: 8098
+ports_description:
+  8098/tcp: Voice worker bridge (MCP); off until api_token is set
+# The app's own folder in /addon_configs, mounted at /config: skills and household.md live here.
+map:
+  - type: addon_config
+    read_only: false
+options:
+  anthropic_api_key: ""
+  model: claude-sonnet-5-5
+  stt_pipeline: auto
+  api_token: ""
+schema:
+  anthropic_api_key: password
+  model: str
+  stt_pipeline: str
+  api_token: password

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  card:
+    uses: ./.github/workflows/build.yml
+  app:
+    uses: ./.github/workflows/app.yml
+  python:
+    uses: ./.github/workflows/python.yml
+  security:
+    uses: ./.github/workflows/security.yml
+  images:
+    uses: ./.github/workflows/docker.yml
+  hygiene:
+    uses: ./.github/workflows/repository-hygiene.yml
+  hacs:
+    if: github.event.repository.private == false
+    uses: ./.github/workflows/validate.yml
+
+  gate:
+    name: CI required
+    if: always()
+    needs: [card, app, python, security, images, hygiene, hacs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every validation job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          PRIVATE_REPOSITORY: ${{ github.event.repository.private }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+
+          results = json.loads(os.environ["RESULTS"])
+          failed = []
+          for name, job in results.items():
+              # HACS refuses private repositories; every other gate is mandatory.
+              if name == "hacs" and os.environ["PRIVATE_REPOSITORY"] == "true" and job["result"] == "skipped":
+                  continue
+              if job["result"] != "success":
+                  failed.append(f"{name}: {job['result']}")
+          if failed:
+              raise SystemExit("CI did not pass: " + ", ".join(failed))
+          print("All required checks passed.")
+          PYTHON

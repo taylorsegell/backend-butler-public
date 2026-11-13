@@ -1,0 +1,41 @@
+name: Card
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Card tests and bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: card/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: card
+      - run: pnpm typecheck
+        working-directory: card
+      - run: pnpm test
+        working-directory: card
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: card
+      - run: pnpm test:browser
+        working-directory: card
+      - run: pnpm build
+        working-directory: card
+      - name: Verify committed card bundle
+        run: |
+          bundle=custom_components/backend_butler/frontend/backend-butler-card.js
+          if ! git ls-files --error-unmatch "$bundle" >/dev/null 2>&1 || ! git diff --exit-code --quiet -- "$bundle"; then
+            echo "::error::Card bundle is stale. Run pnpm --dir card build and commit the generated bundle."
+            exit 1
+          fi

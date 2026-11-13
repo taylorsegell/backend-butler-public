@@ -1,0 +1,35 @@
+name: Repository hygiene
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Repository contents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject local tooling and generated artifacts
+        run: |
+          python3 - <<'PYTHON'
+          import subprocess
+          from pathlib import PurePosixPath
+
+          local_dirs = {".agents", ".codex", ".grok", ".impeccable", ".claude", ".cursor", ".gemini", ".windsurf", ".hyperframes"}
+          files = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          unwanted = []
+          for name in filter(None, files):
+              parts = PurePosixPath(name).parts
+              if (local_dirs.intersection(parts)
+                  or parts[0].startswith("brag-output")
+                  or parts[0] == "tasks"
+                  or parts[:2] in {("docs", "specs"), ("docs", "adr")}
+                  or name in {"CAPABILITY-MAP.md", "AGENTS.md", "CLAUDE.md", "GROK.md", "GEMINI.md"}):
+                  unwanted.append(name)
+          if unwanted:
+              raise SystemExit("Local tooling/generated artifacts must remain untracked:\n" + "\n".join(unwanted))
+          print("Repository contains no local agent tooling, promo output or internal task archives.")
+          PYTHON

@@ -1,0 +1,22 @@
+name: validate
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  hacs:
+    if: github.event.repository.private == false
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # 'brands' only matters for inclusion in the default HACS store; this is
+          # installed as a custom repository, so skip it.
+          ignore: brands

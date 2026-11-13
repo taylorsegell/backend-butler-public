@@ -1,0 +1,16 @@
+node_modules
+dist
+test
+.impeccable
+widget
+*.md
+!skills/**/*.md
+
+# Deployment secrets and local state never belong in build contexts.
+.env
+.env.*
+*.local.yaml
+.data/
+.agents/
+.codex/
+.grok/

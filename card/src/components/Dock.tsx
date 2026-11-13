@@ -1,0 +1,257 @@
+import { type Dispatch, type SetStateAction, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { TurnMode } from '../lib/turn-mode';
+
+/**
+ * The bottom dock, below the scrolling conversation — always a chat composer (the card never
+ * shows a separate "connect" gate; it connects lazily on the first send/speak). It morphs:
+ *  - manual, turn open  → a listening bar (Cancel · live meter · Send)
+ *  - manual, idle       → text bar with a mic button that opens a turn
+ *  - auto               → text bar with a start/pause button for continuous listening
+ * Presentational — all behaviour (including connecting) comes in via props.
+ */
+export interface DockProps {
+  connected: boolean;
+  draft?: string;
+  onDraftChange?: Dispatch<SetStateAction<string>>;
+  /** A connect is in flight (lazy connect on first send/speak). */
+  connecting: boolean;
+  mode: TurnMode;
+  turnActive: boolean;
+  autoPaused: boolean;
+  /** Mic is being acquired (cold-start) — show "Starting…" until it's actually capturing. */
+  micStarting: boolean;
+  onSend: (text: string) => Promise<boolean | void> | void;
+  onTurnStart: () => void;
+  onTurnEnd: () => void;
+  onTurnCancel: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  /** One-tap quick replies shown above the composer; tapping one sends it as the reply. */
+  suggestions?: string[];
+  /** Preview only: pre-fill the input to inspect the send-button state. */
+  initialText?: string;
+}
+
+export function Dock(props: DockProps) {
+  const { mode, turnActive, autoPaused, micStarting, connecting, onSend } = props;
+  const { onTurnStart, onTurnEnd, onTurnCancel, onPause, onResume } = props;
+  const suggestions = props.suggestions ?? [];
+  const dockRef = useRef<HTMLDivElement>(null);
+  const [localText, setLocalText] = useState(props.initialText ?? '');
+  const text = props.draft ?? localText;
+  const setText = props.onDraftChange ?? setLocalText;
+  const inFlight = useRef(false);
+  const [sending, setSending] = useState(false);
+  const canSend = !sending && !connecting && !micStarting && text.trim().length > 0;
+
+  const sendMessage = async (raw: string) => {
+    const message = raw.trim();
+    if (!message || inFlight.current || connecting || micStarting) return;
+    inFlight.current = true;
+    setSending(true);
+    setText((current) => current.trim() === message ? current : message);
+    try {
+      const accepted = await onSend(message);
+      if (accepted !== false) setText((current) => current.trim() === message ? '' : current);
+    } catch {
+      // The caller reports the failure; leave the draft available for retry.
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+    }
+  };
+  const submit = () => sendMessage(text);
+
+  // Manual turn in progress: the composer becomes a focused listening bar. While the mic is
+  // still warming up (cold-start), show "Starting…" with a spinner and hold the Send button —
+  // there's no captured audio to commit yet, and the user shouldn't talk into a dead mic.
+  if (mode === 'manual' && turnActive) {
+    return (
+      <div className="lk-dock" ref={dockRef}>
+        <div className="lk-listen" data-starting={micStarting ? '1' : '0'}>
+          <button className="lk-listen-cancel" aria-label="Cancel recording" title="Cancel recording" onClick={onTurnCancel}>
+            <ha-icon icon="mdi:close" />
+          </button>
+          <div className="lk-listen-mid">
+            {micStarting ? (
+              <span className="lk-spin" aria-hidden="true" />
+            ) : (
+              <span className="lk-eq" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
+            )}
+            <span className="lk-listen-label">{micStarting ? 'Starting…' : 'Listening…'}</span>
+          </div>
+          <button
+            className="lk-listen-send"
+            title="Send recording"
+            aria-label="Send recording"
+            onClick={onTurnEnd}
+            disabled={micStarting}
+          >
+            <span>Send</span>
+            <ha-icon icon="mdi:arrow-up" />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const paused = mode === 'auto' && autoPaused;
+  const placeholder = connecting ? 'Connecting…' : paused ? 'Type, or start talking with the microphone' : 'Type in this live session…';
+
+  return (
+    <div className="lk-dock" ref={dockRef}>
+      {suggestions.length > 0 && (
+        <div className="lk-suggest">
+          {suggestions.map((reply, i) => (
+            <button
+              key={`${i}-${reply}`}
+              className="lk-chip"
+              onClick={() => sendMessage(reply)}
+              disabled={sending || connecting}
+            >
+              {reply}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="lk-bar" data-paused={paused ? '1' : '0'}>
+        <Composer value={text} placeholder={placeholder} onChange={setText} onSubmit={submit} disabled={sending || connecting} />
+        <TrailingButton
+          canSend={canSend}
+          busy={sending || micStarting || connecting}
+          mode={mode}
+          paused={paused}
+          onSubmit={submit}
+          onTurnStart={onTurnStart}
+          onPause={onPause}
+          onResume={onResume}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** The message field: grows with its text up to a few lines, sends on Enter and breaks the line
+ *  on Shift+Enter. An Enter that commits an IME candidate (pinyin typing English) is left to the IME. */
+export function Composer({
+  value,
+  placeholder,
+  onChange,
+  onSubmit,
+  onFocus,
+  disabled = false,
+}: {
+  value: string;
+  placeholder: string;
+  onChange: (text: string) => void;
+  onSubmit: () => void;
+  onFocus?: () => void;
+  disabled?: boolean;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    // an unrendered field measures 0, which would pin it to a sliver that scrolls its placeholder
+    if (el.scrollHeight) el.style.height = `${el.scrollHeight}px`;
+  };
+  useLayoutEffect(fit, [value]);
+  // refit when the field first gets laid out or its width re-wraps the text
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let width = -1;
+    const ro = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width === width) return;
+      width = entry.contentRect.width;
+      fit();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <textarea
+      ref={ref}
+      className="lk-input"
+      aria-label="Message Backend Butler"
+      rows={1}
+      disabled={disabled}
+      value={value}
+      placeholder={placeholder}
+      enterKeyHint="send"
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={onFocus}
+      onKeyDown={(e) => {
+        // Safari ends the composition before this keydown, so only keyCode 229 marks it there
+        if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        onSubmit();
+      }}
+    />
+  );
+}
+
+/** The right-hand button in the text bar: Send when typing, a spinner while connecting/warming,
+ *  else the mode's voice action (manual: tap-to-talk; auto: start/pause continuous listening). */
+function TrailingButton({
+  canSend,
+  busy,
+  mode,
+  paused,
+  onSubmit,
+  onTurnStart,
+  onPause,
+  onResume,
+}: {
+  canSend: boolean;
+  busy: boolean;
+  mode: TurnMode;
+  paused: boolean;
+  onSubmit: () => void;
+  onTurnStart: () => void;
+  onPause: () => void;
+  onResume: () => void;
+}) {
+  if (canSend) {
+    return (
+      <button className="lk-send lk-send--accent" aria-label="Send" title="Send" onClick={onSubmit}>
+        <ha-icon icon="mdi:arrow-up" />
+      </button>
+    );
+  }
+  // Sending a text (connecting first) or warming the mic — hold the button with a spinner.
+  if (busy) {
+    return (
+      <button className="lk-send lk-send--accent" aria-label="Working…" title="Working…" disabled>
+        <span className="lk-spin" aria-hidden="true" />
+      </button>
+    );
+  }
+  if (mode === 'manual') {
+    return (
+      <button className="lk-send lk-send--accent" aria-label="Start talking" title="Start talking" onClick={onTurnStart}>
+        <ha-icon icon="mdi:microphone" />
+      </button>
+    );
+  }
+  // auto mode: start / pause continuous listening
+  if (paused) {
+    return (
+      <button className="lk-send lk-send--accent" aria-label="Start listening" title="Start listening" onClick={onResume}>
+        <ha-icon icon="mdi:microphone" />
+      </button>
+    );
+  }
+  return (
+    <button className="lk-send" data-on="1" aria-label="Pause listening" title="Pause listening" onClick={onPause}>
+      <ha-icon icon="mdi:pause" />
+    </button>
+  );
+}

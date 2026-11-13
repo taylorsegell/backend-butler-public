@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>card preview</title>
+    <style>
+      body { margin: 0; display: grid; place-items: center; min-height: 100vh; padding: 30px; }
+      /* No fixed height: the card is content-sized (capped via max-height), so #frame wraps it. */
+      #frame { width: 400px; }
+    </style>
+  </head>
+  <body>
+    <div id="frame"></div>
+    <script type="module" src="/preview/main.tsx"></script>
+  </body>
+</html>

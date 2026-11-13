@@ -33,7 +33,8 @@ Before publishing a beta:
 - [ ] Enable private vulnerability reporting and configure branch protection/required checks in GitHub.
 - [x] Prepare integration/card version `1.1.0-beta.1` together and verify a fresh card build. The separate HA app version remains independent.
 - [ ] Publish the curated snapshot in the new public repository and run HACS validation there. Keep the development repository private.
-- [ ] Complete the real-HA smoke tests above, including worker restart, permission denial, scheduler failure, and conversation recovery.
+- [x] Complete automated real-HA and isolated real-LiveKit checks, including worker restart, permission denial, scheduler outage, speech input/output, and conversation recovery. See [smoke evidence](smoke-tests.md).
+- [ ] Install this exact candidate card/integration and repeat the physical mobile check; the existing-deployment phone check passed, but its bundle differs.
 - [x] Verify closed-state backup/restoration on disposable conversation and scheduler data, including restart and ownership checks.
 - [ ] Before deployment, capture the actual deployment backup and previous image/commit; never use a synthetic recovery test as a substitute for that backup.
 - [ ] Create a reviewed `v…-beta.…` tag at the tested commit. The release workflow creates a draft and marks tags containing a hyphen as prereleases. Review release notes and publish manually only after all gates pass.

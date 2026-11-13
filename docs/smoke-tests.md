@@ -24,8 +24,17 @@ The suite reads states and registries and submits valid/invalid configuration to
 
 These checks cover storage and scheduler recovery. They do not verify LiveKit transport, real speech or a physical mobile microphone.
 
-## Candidate live-session gate
+## Live candidate results — 2026-11-13
 
-Real LiveKit voice input/output, mute/stop, reconnect, worker restart, cross-user persistence, and scheduler-outage/recovery must be verified against the isolated candidate stack. Use synthetic speech and test users, unique worker dispatch name, isolated state and random client tokens. Do not stop household services, perform device actions, publish raw transcripts or copy production state. Remove the temporary stack and credentials afterward.
+The isolated candidate stack used synthetic users/state, its own worker dispatch name and temporary credentials on the same trusted worker host. Extra MCP servers were disabled; test prompts performed no tool/device actions.
 
-Physical microphone/speaker behavior in the HA mobile app still requires a person on the target device. Programmatic audio tests can verify the transport/inference path but do not certify phone permissions or acoustic quality.
+- Invalid client tokens and cross-person conversation access were rejected.
+- Real RTC dispatch, text delivery, persisted model replies, manual microphone controls, cancel, and reply-audio toggles passed.
+- Synthesized microphone audio passed through real LiveKit STT, the configured model and TTS; non-silent reply audio arrived over RTC.
+- A new RTC session restored the saved context, and the model recalled the synthetic phrase.
+- A full candidate-worker restart preserved history and ownership; a new RTC/model session resumed it successfully.
+- With the isolated scheduler stopped, stored history and core RTC/model conversations remained available. The scheduler was then restarted.
+- Temporary containers, network, synthetic state and credential copies were removed. Household worker/scheduler services stayed on their original images.
+- The maintainer confirmed mobile microphone, captions, spoken reply, mute/stop and reconnect behavior on the existing HA deployment. Its served card bundle differs from this candidate; an exact-candidate installation/phone check remains the final device gate.
+
+Physical phone permissions and acoustic behavior cannot be certified by synthetic audio or browser fixtures. Before publishing the beta release, repeat the mobile check against the installed candidate bundle.

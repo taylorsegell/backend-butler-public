@@ -10,6 +10,6 @@ Use the [public beta guide](public-beta.md) and [Home Assistant integration guid
 
 ## Before publication
 
-Select the beta version and tested commit, complete the [release gates](public-beta.md), and verify the patched OpenTelemetry audit remains clean. The public repository uses a curated source snapshot and fresh history; the development repository stays private. HACS must pass on the public repository. Real Home Assistant voice/reconnect, multi-user isolation, and rollback smoke tests are required before inviting testers.
+Select the beta version and tested commit, complete the [release gates](public-beta.md), and verify the patched OpenTelemetry audit remains clean. The public repository uses a curated source snapshot and fresh history; the development repository stays private. HACS must pass on the public repository. Automated real-HA, real-LiveKit speech/reconnect, owner isolation and disposable-state recovery tests pass. Repeat the physical mobile check after installing this exact candidate bundle before inviting testers.
 
 Beta storage/API compatibility can change. Back up conversation state and scheduler data before upgrading. Report redacted issues through GitHub; report vulnerabilities privately following [SECURITY.md](../SECURITY.md).
